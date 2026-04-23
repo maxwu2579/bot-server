@@ -18,7 +18,7 @@ app = Flask(__name__)
 #    - created_at (text)
 from supabase import create_client
 
-SUPABASE_URL = "https://hlbxdlnpgjocxwdkpfdh.supabase.co/rest/v1/"  # ← 换成你的
+SUPABASE_URL = "https://hlbxdlnpgjocxwdkpfdh.supabase.co"  # ← 换成你的
 SUPABASE_KEY = "sb_publishable_5VEg7XyCNQPqfADbbp3tHw_KMbnJDhx"  # ← 换成你的
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
