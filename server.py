@@ -31,10 +31,9 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 @app.route("/verify", methods=["GET"])
 def verify():
-    data = request.json or {}
-    key = data.get("key", "").strip()
-    machine_id = data.get("machine_id", "")
-    plan = data.get("plan", "")
+    key = request.args.get("key", "").strip()
+    machine_id = request.args.get("machine_id", "")
+    plan = request.args.get("plan", "")
 
     if not key:
         return jsonify({"valid": False, "reason": "授权码为空"})
