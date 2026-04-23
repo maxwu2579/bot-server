@@ -29,7 +29,7 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 # ============================================================
 
 
-@app.route("/verify", methods=["POST"])
+@app.route("/verify", methods=["GET"])
 def verify():
     data = request.json or {}
     key = data.get("key", "").strip()
