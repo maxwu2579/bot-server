@@ -11,6 +11,35 @@ import requests
 import hmac
 import json
 
+
+def is_yellow_button(x, y, size=50):
+    try:
+        import numpy as np
+        import cv2
+
+        # 截取按钮附近区域
+        left = int(x - size // 2)
+        top = int(y - size // 2)
+
+        screenshot = np.array(
+            _sct.grab({"left": left, "top": top, "width": size, "height": size})
+        )
+
+        img = cv2.cvtColor(screenshot, cv2.COLOR_BGRA2BGR)
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+
+        # 黄色范围（可以调）
+        lower = np.array([10, 50, 50])
+        upper = np.array([45, 255, 255])
+
+        mask = cv2.inRange(hsv, lower, upper)
+        ratio = (mask > 0).sum() / (size * size)
+
+        return ratio > 0.08  # 超过15%算黄色按钮
+    except:
+        return False
+
+
 # ============================================================
 #  工具函数
 # ============================================================
@@ -129,8 +158,7 @@ region = None  # 自动检测游戏窗口后会自动设置
 # ⭐ 支持的窗口标题列表（按优先级）
 # 会按顺序尝试匹配：原生游戏 → 各种模拟器
 GAME_WINDOW_TITLES = [
-    "微信",  # ← 微信小程序里玩游戏
-    "指尖王国",
+    "指尖王国",  # ← 游戏窗口（必须放第一位，优先匹配）
     "小游戏",
     "LDPlayer",
     "雷电模拟器",
@@ -141,6 +169,7 @@ GAME_WINDOW_TITLES = [
     "夜神模拟器",
     "逍遥模拟器",
     "腾讯手游助手",
+    "微信",  # ← 微信放最后（兜底，用户没装游戏专属窗口时才用）
 ]
 
 
@@ -206,25 +235,35 @@ def fast_find(name, conf=0.85):
 
 
 def auto_detect_region():
-    """自动检测游戏窗口位置（按顺序尝试多个标题，选最大的窗口）"""
+    """自动检测游戏窗口位置（优先手机竖屏比例的窗口）"""
     global region
     try:
         import pygetwindow as gw
 
+        # 先收集所有匹配的窗口
+        all_matches = []
         for title in GAME_WINDOW_TITLES:
             wins = gw.getWindowsWithTitle(title)
-            # 过滤太小的窗口（比如手机投屏的小窗口）
-            wins = [w for w in wins if w.width > 300 and w.height > 300]
-            if wins:
-                # 选面积最大的窗口（真实游戏比投屏窗口大）
-                w = max(wins, key=lambda x: x.width * x.height)
-                region = (
-                    max(0, w.left + 10),
-                    max(0, w.top + 10),
-                    w.width - 20,
-                    w.height - 20,
-                )
-                return f"{title} ({w.width}x{w.height})"
+            for w in wins:
+                if w.width > 300 and w.height > 300:
+                    # 给竖屏窗口加分（手机游戏多为竖屏）
+                    is_portrait = w.height > w.width
+                    score = w.width * w.height
+                    if is_portrait:
+                        score *= 2  # 竖屏优先级翻倍
+                    all_matches.append((score, title, w))
+
+        if all_matches:
+            # 选评分最高的
+            all_matches.sort(key=lambda x: -x[0])
+            _, title, w = all_matches[0]
+            region = (
+                max(0, w.left + 10),
+                max(0, w.top + 10),
+                w.width - 20,
+                w.height - 20,
+            )
+            return f"{title} ({w.width}x{w.height})"
     except:
         pass
     region = None
@@ -286,7 +325,7 @@ def find_text(target_text: str, conf=0.5):
         # 查找匹配的文字
         targets = [t.strip() for t in target_text.split("|")]
         for box, text, score in result:
-            if score < conf:
+            if float(score) < conf:
                 continue
             for t in targets:
                 if t in text:
@@ -300,6 +339,53 @@ def find_text(target_text: str, conf=0.5):
                     if region:
                         cx += region[0]
                         cy += region[1]
+                    return (cx, cy)
+    except Exception as e:
+        print(f"OCR 错误: {e}")
+    return None
+
+
+def find_text_in_region(target_text: str, y_pct_start=0.0, y_pct_end=1.0, conf=0.5):
+    """
+    在窗口的指定纵向百分比区域内找文字（不依赖分辨率）
+    y_pct_start=0.6 表示从窗口60%高度开始找
+    """
+    if not OCR_AVAILABLE or not FAST_MODE:
+        return None
+    try:
+        ocr = _get_ocr()
+        if ocr is None:
+            return None
+
+        # 计算截图区域
+        if region:
+            rx, ry, rw, rh = region
+        else:
+            mon = _sct.monitors[1]
+            rx, ry, rw, rh = mon["left"], mon["top"], mon["width"], mon["height"]
+
+        # 按比例裁剪纵向范围
+        crop_top = ry + int(rh * y_pct_start)
+        crop_h = int(rh * (y_pct_end - y_pct_start))
+
+        mon = {"left": rx, "top": crop_top, "width": rw, "height": crop_h}
+        screenshot = np.array(_sct.grab(mon))
+        img = cv2.cvtColor(screenshot, cv2.COLOR_BGRA2BGR)
+
+        result, _ = ocr(img)
+        if not result:
+            return None
+
+        targets = [t.strip() for t in target_text.split("|")]
+        for box, text, score in result:
+            if float(score) < conf:
+                continue
+            for t in targets:
+                if t in text:
+                    xs = [p[0] for p in box]
+                    ys = [p[1] for p in box]
+                    cx = int(sum(xs) / 4) + rx
+                    cy = int(sum(ys) / 4) + crop_top
                     return (cx, cy)
     except Exception as e:
         print(f"OCR 错误: {e}")
@@ -521,12 +607,27 @@ def bot_loop_shield(app):
                         app._log("⚠️ 超时，重置")
                         step = 1
             elif step == 4:
-                if click_text("集结"):
+                # 弹窗里的集结按钮，限定在窗口下60%找，避免被上方文字干扰
+                pos = find_text_in_region("集结", y_pct_start=0.7, y_pct_end=1.0)
+                if pos:
+                    cx, cy = pos
+                    pyautogui.click(
+                        cx + random.randint(-8, 8), cy + random.randint(-5, 5)
+                    )
+                    time.sleep(random.uniform(0.3, 0.5))
                     app._log("✅ 步骤4：集结")
                     step = 5
                     success = True
+
             elif step == 5:
-                if click_text("出发"):
+                # 出发按钮也限定在下半区找
+                pos = find_text_in_region("出发", y_pct_start=0.6, y_pct_end=1.0)
+                if pos:
+                    cx, cy = pos
+                    pyautogui.click(
+                        cx + random.randint(-8, 8), cy + random.randint(-5, 5)
+                    )
+                    time.sleep(random.uniform(0.3, 0.5))
                     app._log("✅ 步骤5：出发！重新开始")
                     step = 1
                     success = True
@@ -595,7 +696,14 @@ def bot_loop_titan(app):
                     step = 2
                     success = True
             elif step == 2:
-                if click_text("集结"):
+                # 集结按钮限定在下半区找
+                pos = find_text_in_region("集结", y_pct_start=0.1, y_pct_end=0.5)
+                if pos:
+                    cx, cy = pos
+                    pyautogui.click(
+                        cx + random.randint(-8, 8), cy + random.randint(-5, 5)
+                    )
+                    time.sleep(random.uniform(0.3, 0.5))
                     app._log("✅ 步骤2：集结按钮")
                     step = 3
                     success = True
@@ -603,18 +711,30 @@ def bot_loop_titan(app):
                 if click_text("搜索"):
                     app._log("✅ 步骤3：搜索2，等待出发...")
                     success = True
-                    if wait_for_text("出发", timeout=8):
+                    if wait_for_text("集结", timeout=4):
                         step = 4
                     else:
                         app._log("⚠️ 超时，重置")
                         step = 1
             elif step == 4:
-                if click_text("出发"):
+                pos = find_text_in_region("集结", y_pct_start=0.6, y_pct_end=1.0)
+                if pos:
+                    cx, cy = pos
+                    pyautogui.click(
+                        cx + random.randint(-8, 8), cy + random.randint(-5, 5)
+                    )
+                    time.sleep(random.uniform(0.3, 0.5))
                     app._log("✅ 步骤4：出发2")
                     step = 5
                     success = True
             elif step == 5:
-                if click_text("出发"):
+                pos = find_text_in_region("出发", y_pct_start=0.5, y_pct_end=1.0)
+                if pos:
+                    cx, cy = pos
+                    pyautogui.click(
+                        cx + random.randint(-8, 8), cy + random.randint(-5, 5)
+                    )
+                    time.sleep(random.uniform(0.3, 0.5))
                     app._log("✅ 步骤5：出发！重新开始")
                     step = 1
                     success = True
@@ -762,8 +882,8 @@ class BotApp:
 
         plans = [
             ("🆓  免费试用（1小时）", "trial", GRAY),
-            ("📅  周卡  RM 15", "week", YELLOW),
-            ("👑  月卡  RM 45", "month", GREEN),
+            ("📅  周卡   7", "week", YELLOW),
+            ("👑  月卡  20", "month", GREEN),
         ]
         plan_row = tk.Frame(pc, bg=CARD)
         plan_row.pack(fill="x", padx=15, pady=(0, 4))
@@ -879,14 +999,14 @@ class BotApp:
         if mode == "shield":
             self.shield_btn.config(bg=ACCENT, relief="sunken")
             self.titan_btn.config(bg=CARD, relief="flat")
-            self.mode_desc.config(text="🛡️ 盾牌模式：特殊副本集结挂机", fg=BLUE)
+            self.mode_desc.config(text="🛡️ 盾牌模式：副本挂机", fg=BLUE)
             self.start_btn.config(
                 text="▶  启动盾牌模式", bg=BLUE, fg="#0f172a", state="normal"
             )
         else:
             self.titan_btn.config(bg=ACCENT, relief="sunken")
             self.shield_btn.config(bg=CARD, relief="flat")
-            self.mode_desc.config(text="⚔️ 泰坦模式：泰坦集结挂机", fg=ORANGE)
+            self.mode_desc.config(text="⚔️ 泰坦模式：泰坦挂机", fg=ORANGE)
             self.start_btn.config(
                 text="▶  启动泰坦模式", bg=ORANGE, fg="#0f172a", state="normal"
             )
