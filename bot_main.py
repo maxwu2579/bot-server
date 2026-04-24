@@ -24,40 +24,6 @@ def resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 
-def find_variants(base_name: str) -> list:
-    """
-    自动查找所有变体图片
-    例如: base_name='search'  会找到:
-    - search.png
-    - search_wx.png (微信版)
-    - search_dy.png (抖音版)
-    - search_emu.png (模拟器版)
-    - search_任意后缀.png (自定义版本)
-    只要文件名以 search 或 search_ 开头并且是 .png 的都会被找到
-    """
-    try:
-        base_path = sys._MEIPASS
-    except Exception:
-        base_path = os.path.abspath(".")
-
-    variants = []
-    try:
-        for filename in os.listdir(base_path):
-            if not filename.endswith(".png"):
-                continue
-            name_no_ext = filename[:-4]  # 去掉 .png
-            if name_no_ext == base_name or name_no_ext.startswith(base_name + "_"):
-                variants.append(filename)
-    except:
-        pass
-
-    # 如果啥都没找到，至少返回原名（兜底）
-    if not variants:
-        variants = [base_name + ".png"]
-
-    return variants
-
-
 def get_machine_id():
     parts = []
     parts.append(str(uuid.getnode()))
@@ -265,6 +231,101 @@ def auto_detect_region():
     return None
 
 
+# ============================================================
+#  OCR 文字识别 (RapidOCR，不依赖分辨率)
+# ============================================================
+
+try:
+    from rapidocr_onnxruntime import RapidOCR
+
+    _ocr_engine = None
+    OCR_AVAILABLE = True
+except ImportError:
+    OCR_AVAILABLE = False
+
+
+def _get_ocr():
+    """延迟初始化 OCR（第一次用时才加载）"""
+    global _ocr_engine
+    if _ocr_engine is None and OCR_AVAILABLE:
+        _ocr_engine = RapidOCR()
+    return _ocr_engine
+
+
+def find_text(target_text: str, conf=0.5):
+    """
+    在屏幕上找文字，返回按钮中心坐标 (x, y) 或 None
+    target_text: 要找的文字，支持多个（用 | 分隔）
+                 例如: "搜索"  或  "特殊|特殊模式"
+    """
+    if not OCR_AVAILABLE or not FAST_MODE:
+        return None
+    try:
+        ocr = _get_ocr()
+        if ocr is None:
+            return None
+
+        # 截图
+        if region:
+            mon = {
+                "left": region[0],
+                "top": region[1],
+                "width": region[2],
+                "height": region[3],
+            }
+        else:
+            mon = _sct.monitors[1]
+        screenshot = np.array(_sct.grab(mon))
+        img = cv2.cvtColor(screenshot, cv2.COLOR_BGRA2BGR)
+
+        # OCR 识别
+        result, _ = ocr(img)
+        if not result:
+            return None
+
+        # 查找匹配的文字
+        targets = [t.strip() for t in target_text.split("|")]
+        for box, text, score in result:
+            if score < conf:
+                continue
+            for t in targets:
+                if t in text:
+                    # box 是4个点 [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]
+                    # 计算中心
+                    xs = [p[0] for p in box]
+                    ys = [p[1] for p in box]
+                    cx = int(sum(xs) / 4)
+                    cy = int(sum(ys) / 4)
+                    # 加上 region 偏移
+                    if region:
+                        cx += region[0]
+                        cy += region[1]
+                    return (cx, cy)
+    except Exception as e:
+        print(f"OCR 错误: {e}")
+    return None
+
+
+def click_text(target_text: str):
+    """用 OCR 找文字并点击"""
+    pos = find_text(target_text)
+    if pos:
+        cx, cy = pos
+        pyautogui.click(cx + random.randint(-8, 8), cy + random.randint(-5, 5))
+        time.sleep(random.uniform(0.3, 0.5))
+        return True
+    return False
+
+
+def wait_for_text(target_text: str, timeout=8):
+    """等待某个文字出现"""
+    for _ in range(timeout):
+        if find_text(target_text):
+            return True
+        time.sleep(1)
+    return False
+
+
 def find_img(name, conf=0.85):
     # 优先用 mss+cv2 快速模式
     if FAST_MODE:
@@ -325,10 +386,9 @@ def click_btn_multi(names):
     return False
 
 
-def wait_for_multi(names, timeout=8):
-    """等待多张图片中的任意一张出现"""
+def wait_for(name, timeout=8):
     for _ in range(timeout):
-        if find_img_multi(names):
+        if find_img(name):
             return True
         time.sleep(1)
     return False
@@ -403,6 +463,15 @@ def bot_loop_shield(app):
     step = 1
     fail_count = 0
     app._log("🛡️ 盾牌模式启动，5秒后开始...")
+    found = auto_detect_region()
+    if found:
+        app._log(f"✅ 检测到窗口「{found}」")
+    else:
+        app._log("⚠️ 未检测到游戏窗口，使用全屏模式")
+    if OCR_AVAILABLE:
+        app._log("🔤 OCR文字识别已就绪（首次识别需1-2秒加载）")
+    else:
+        app._log("⚠️ OCR 未安装，请 pip install rapidocr_onnxruntime")
     time.sleep(5)
 
     while app.running:
@@ -422,7 +491,7 @@ def bot_loop_shield(app):
         time.sleep(0.1)
         success = False
 
-        for popup_img in find_variants("close") + find_variants("cancel"):
+        for popup_img in ["close.png", "close2.png", "cancel.png"]:
             popup = find_img(popup_img)
             if popup:
                 center = _center_of(popup)
@@ -433,33 +502,31 @@ def bot_loop_shield(app):
                 break
         else:
             if step == 1:
-                if click_btn_multi(find_variants("search")):
+                if click_text("搜索"):
                     app._log("✅ 步骤1：搜索")
                     step = 2
                     success = True
             elif step == 2:
-                if click_btn_multi(
-                    find_variants("special_off") + find_variants("special_on")
-                ):
+                if click_text("特殊"):
                     app._log("✅ 步骤2：特殊")
                     step = 3
                     success = True
             elif step == 3:
-                if click_btn_multi(find_variants("summon")):
+                if click_text("召唤"):
                     app._log("✅ 步骤3：召唤，等待集结...")
                     success = True
-                    if wait_for_multi(find_variants("gather"), timeout=8):
+                    if wait_for_text("集结", timeout=8):
                         step = 4
                     else:
                         app._log("⚠️ 超时，重置")
                         step = 1
             elif step == 4:
-                if click_btn_multi(find_variants("gather")):
+                if click_text("集结"):
                     app._log("✅ 步骤4：集结")
                     step = 5
                     success = True
             elif step == 5:
-                if click_btn_multi(find_variants("start")):
+                if click_text("出发"):
                     app._log("✅ 步骤5：出发！重新开始")
                     step = 1
                     success = True
@@ -486,6 +553,13 @@ def bot_loop_titan(app):
     step = 1
     fail_count = 0
     app._log("⚔️ 泰坦模式启动，5秒后开始...")
+    found = auto_detect_region()
+    if found:
+        app._log(f"✅ 检测到窗口「{found}」")
+    else:
+        app._log("⚠️ 未检测到游戏窗口，使用全屏模式")
+    if OCR_AVAILABLE:
+        app._log("🔤 OCR文字识别已就绪（首次识别需1-2秒加载）")
     time.sleep(5)
 
     while app.running:
@@ -505,7 +579,7 @@ def bot_loop_titan(app):
         time.sleep(0.1)
         success = False
 
-        for popup_img in find_variants("close") + find_variants("cancel"):
+        for popup_img in ["close.png", "close2.png", "cancel.png"]:
             popup = find_img(popup_img)
             if popup:
                 center = _center_of(popup)
@@ -516,31 +590,31 @@ def bot_loop_titan(app):
                 break
         else:
             if step == 1:
-                if click_btn_multi(find_variants("search")):
+                if click_text("搜索"):
                     app._log("✅ 步骤1：搜索")
                     step = 2
                     success = True
             elif step == 2:
-                if click_btn_multi(find_variants("assembly")):
+                if click_text("集结"):
                     app._log("✅ 步骤2：集结按钮")
                     step = 3
                     success = True
             elif step == 3:
-                if click_btn_multi(find_variants("search2")):
+                if click_text("搜索"):
                     app._log("✅ 步骤3：搜索2，等待出发...")
                     success = True
-                    if wait_for_multi(find_variants("start2"), timeout=8):
+                    if wait_for_text("出发", timeout=8):
                         step = 4
                     else:
                         app._log("⚠️ 超时，重置")
                         step = 1
             elif step == 4:
-                if click_btn_multi(find_variants("start2")):
+                if click_text("出发"):
                     app._log("✅ 步骤4：出发2")
                     step = 5
                     success = True
             elif step == 5:
-                if click_btn_multi(find_variants("start")):
+                if click_text("出发"):
                     app._log("✅ 步骤5：出发！重新开始")
                     step = 1
                     success = True
