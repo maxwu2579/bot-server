@@ -215,6 +215,7 @@ def wait_for(name, timeout=8):
 # ============================================================
 
 VERIFY_URL = "https://bot-server-production-f910.up.railway.app/verify"
+TRIAL_URL = "https://bot-server-production-f910.up.railway.app/trial"
 SIGN_SECRET = "2579561724a"
 TRIAL_SECONDS = 3600
 HEARTBEAT_INTERVAL = 1800
@@ -225,9 +226,30 @@ def make_signature(data: dict) -> str:
     return hmac.new(SIGN_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
 
 
+def verify_trial():
+    """试用验证：返回 (可用?, 剩余秒数/原因)"""
+    try:
+        machine_id = get_machine_id()
+        payload = {"machine_id": machine_id}
+        payload["sig"] = make_signature({"machine_id": machine_id})
+        resp = requests.post(TRIAL_URL, json=payload, timeout=8)
+        data = resp.json()
+        if data.get("valid"):
+            return True, data.get("remaining", 3600)
+        return False, data.get("reason", "试用失败")
+    except requests.exceptions.ConnectionError:
+        return False, "无法连接验证服务器"
+    except Exception as e:
+        return False, f"验证出错: {e}"
+
+
 def verify_license(key, plan):
     if plan == "trial":
-        return True, "试用模式"
+        ok, result = verify_trial()
+        if ok:
+            return True, f"试用剩余 {int(result)//60} 分钟"
+        return False, str(result)
+
     if not key:
         return False, "请输入授权码"
     try:
@@ -699,12 +721,22 @@ class BotApp:
         self._cached_key = key
         self._cached_plan = plan
         mode_name = "盾牌" if self.mode == "shield" else "泰坦"
-        self._log(f"✅ 授权通过 [{plan}] 到期：{reason}")
+        self._log(f"✅ 授权通过 [{plan}] {reason}")
         self._log(f"🚀 启动{mode_name}模式")
 
         self.running = True
         self.start_time = time.time()
-        self.trial_limit = TRIAL_SECONDS if plan == "trial" else float("inf")
+
+        # 试用用服务器返回的剩余秒数
+        if plan == "trial":
+            # 从 reason 里解析剩余分钟："试用剩余 60 分钟"
+            try:
+                mins = int(reason.split("剩余")[1].split("分钟")[0].strip())
+                self.trial_limit = mins * 60
+            except:
+                self.trial_limit = TRIAL_SECONDS
+        else:
+            self.trial_limit = float("inf")
 
         self.start_btn.config(text="⏹  停 止", bg="#f87171", fg="white")
         self.shield_btn.config(state="disabled")
