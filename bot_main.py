@@ -24,6 +24,40 @@ def resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 
+def find_variants(base_name: str) -> list:
+    """
+    自动查找所有变体图片
+    例如: base_name='search'  会找到:
+    - search.png
+    - search_wx.png (微信版)
+    - search_dy.png (抖音版)
+    - search_emu.png (模拟器版)
+    - search_任意后缀.png (自定义版本)
+    只要文件名以 search 或 search_ 开头并且是 .png 的都会被找到
+    """
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    variants = []
+    try:
+        for filename in os.listdir(base_path):
+            if not filename.endswith(".png"):
+                continue
+            name_no_ext = filename[:-4]  # 去掉 .png
+            if name_no_ext == base_name or name_no_ext.startswith(base_name + "_"):
+                variants.append(filename)
+    except:
+        pass
+
+    # 如果啥都没找到，至少返回原名（兜底）
+    if not variants:
+        variants = [base_name + ".png"]
+
+    return variants
+
+
 def get_machine_id():
     parts = []
     parts.append(str(uuid.getnode()))
@@ -170,7 +204,7 @@ def _load_template(name):
     return img
 
 
-def fast_find(name, conf=0.70):
+def fast_find(name, conf=0.85):
     """用 mss+cv2 快速找图，返回 (x, y, w, h) 或 None"""
     if not FAST_MODE:
         return None
@@ -231,7 +265,7 @@ def auto_detect_region():
     return None
 
 
-def find_img(name, conf=0.70):
+def find_img(name, conf=0.85):
     # 优先用 mss+cv2 快速模式
     if FAST_MODE:
         pos = fast_find(name, conf)
@@ -249,7 +283,7 @@ def find_img(name, conf=0.70):
         return None
 
 
-def find_img_multi(names, conf=0.70):
+def find_img_multi(names, conf=0.85):
     for name in names:
         pos = find_img(name, conf)
         if pos:
@@ -291,9 +325,10 @@ def click_btn_multi(names):
     return False
 
 
-def wait_for(name, timeout=8):
+def wait_for_multi(names, timeout=8):
+    """等待多张图片中的任意一张出现"""
     for _ in range(timeout):
-        if find_img(name):
+        if find_img_multi(names):
             return True
         time.sleep(1)
     return False
@@ -368,11 +403,6 @@ def bot_loop_shield(app):
     step = 1
     fail_count = 0
     app._log("🛡️ 盾牌模式启动，5秒后开始...")
-    found = auto_detect_region()
-    if found:
-        app._log(f"✅ 检测到窗口「{found}」已自动提速")
-    else:
-        app._log("⚠️ 未检测到游戏窗口，使用全屏模式")
     time.sleep(5)
 
     while app.running:
@@ -392,7 +422,7 @@ def bot_loop_shield(app):
         time.sleep(0.1)
         success = False
 
-        for popup_img in ["close.png", "close2.png", "cancel.png"]:
+        for popup_img in find_variants("close") + find_variants("cancel"):
             popup = find_img(popup_img)
             if popup:
                 center = _center_of(popup)
@@ -403,31 +433,33 @@ def bot_loop_shield(app):
                 break
         else:
             if step == 1:
-                if click_btn("search.png"):
+                if click_btn_multi(find_variants("search")):
                     app._log("✅ 步骤1：搜索")
                     step = 2
                     success = True
             elif step == 2:
-                if click_btn_multi(["special_off.png", "special_on.png"]):
+                if click_btn_multi(
+                    find_variants("special_off") + find_variants("special_on")
+                ):
                     app._log("✅ 步骤2：特殊")
                     step = 3
                     success = True
             elif step == 3:
-                if click_btn("summon.png"):
+                if click_btn_multi(find_variants("summon")):
                     app._log("✅ 步骤3：召唤，等待集结...")
                     success = True
-                    if wait_for("gather.png", timeout=8):
+                    if wait_for_multi(find_variants("gather"), timeout=8):
                         step = 4
                     else:
                         app._log("⚠️ 超时，重置")
                         step = 1
             elif step == 4:
-                if click_btn("gather.png"):
+                if click_btn_multi(find_variants("gather")):
                     app._log("✅ 步骤4：集结")
                     step = 5
                     success = True
             elif step == 5:
-                if click_btn("start.png"):
+                if click_btn_multi(find_variants("start")):
                     app._log("✅ 步骤5：出发！重新开始")
                     step = 1
                     success = True
@@ -454,11 +486,6 @@ def bot_loop_titan(app):
     step = 1
     fail_count = 0
     app._log("⚔️ 泰坦模式启动，5秒后开始...")
-    found = auto_detect_region()
-    if found:
-        app._log(f"✅ 检测到窗口「{found}」已自动提速")
-    else:
-        app._log("⚠️ 未检测到游戏窗口，使用全屏模式")
     time.sleep(5)
 
     while app.running:
@@ -478,7 +505,7 @@ def bot_loop_titan(app):
         time.sleep(0.1)
         success = False
 
-        for popup_img in ["close.png", "close2.png", "cancel.png"]:
+        for popup_img in find_variants("close") + find_variants("cancel"):
             popup = find_img(popup_img)
             if popup:
                 center = _center_of(popup)
@@ -489,31 +516,31 @@ def bot_loop_titan(app):
                 break
         else:
             if step == 1:
-                if click_btn("search.png"):
+                if click_btn_multi(find_variants("search")):
                     app._log("✅ 步骤1：搜索")
                     step = 2
                     success = True
             elif step == 2:
-                if click_btn("assembly.png"):
+                if click_btn_multi(find_variants("assembly")):
                     app._log("✅ 步骤2：集结按钮")
                     step = 3
                     success = True
             elif step == 3:
-                if click_btn("search2.png"):
+                if click_btn_multi(find_variants("search2")):
                     app._log("✅ 步骤3：搜索2，等待出发...")
                     success = True
-                    if wait_for("start2.png", timeout=8):
+                    if wait_for_multi(find_variants("start2"), timeout=8):
                         step = 4
                     else:
                         app._log("⚠️ 超时，重置")
                         step = 1
             elif step == 4:
-                if click_btn("start2.png"):
+                if click_btn_multi(find_variants("start2")):
                     app._log("✅ 步骤4：出发2")
                     step = 5
                     success = True
             elif step == 5:
-                if click_btn("start.png"):
+                if click_btn_multi(find_variants("start")):
                     app._log("✅ 步骤5：出发！重新开始")
                     step = 1
                     success = True
