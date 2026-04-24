@@ -440,7 +440,7 @@ class BotApp:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("挂机助手 v2.0")
-        self.root.geometry("600x1400")
+        self.root.geometry("800x1400")
         self.root.resizable(False, False)
         self.root.configure(bg="#0f0f1a")
 
