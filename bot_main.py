@@ -53,15 +53,108 @@ try:
 except ImportError:
     PYAUTOGUI_AVAILABLE = False
 
-region = None
+region = None  # 自动检测游戏窗口后会自动设置
+
+# ⭐ 游戏窗口标题（部分匹配）
+GAME_WINDOW_TITLE = "小游戏"
+
+
+# ============================================================
+#  快速图像识别 (mss + cv2，比 pyautogui 快 5-10 倍)
+# ============================================================
+
+try:
+    import mss
+    import cv2
+    import numpy as np
+
+    FAST_MODE = True
+    _sct = mss.mss()
+    _template_cache = {}
+except ImportError:
+    FAST_MODE = False
+
+
+def _load_template(name):
+    """加载并缓存模板图（灰度）"""
+    if name in _template_cache:
+        return _template_cache[name]
+    path = resource_path(name)
+    img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+    _template_cache[name] = img
+    return img
+
+
+def fast_find(name, conf=0.85):
+    """用 mss+cv2 快速找图，返回 (x, y, w, h) 或 None"""
+    if not FAST_MODE:
+        return None
+    try:
+        template = _load_template(name)
+        if template is None:
+            return None
+
+        if region:
+            mon = {
+                "left": region[0],
+                "top": region[1],
+                "width": region[2],
+                "height": region[3],
+            }
+        else:
+            mon = _sct.monitors[1]
+
+        screenshot = np.array(_sct.grab(mon))
+        gray = cv2.cvtColor(screenshot, cv2.COLOR_BGRA2GRAY)
+
+        result = cv2.matchTemplate(gray, template, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(result)
+
+        if max_val >= conf:
+            h, w = template.shape
+            x = max_loc[0] + (region[0] if region else 0)
+            y = max_loc[1] + (region[1] if region else 0)
+            return (x, y, w, h)
+    except:
+        pass
+    return None
+
+
+def auto_detect_region():
+    """自动检测游戏窗口位置"""
+    global region
+    try:
+        import pygetwindow as gw
+
+        wins = gw.getWindowsWithTitle(GAME_WINDOW_TITLE)
+        if wins:
+            w = wins[0]
+            region = (
+                max(0, w.left + 10),
+                max(0, w.top + 10),
+                w.width - 20,
+                w.height - 20,
+            )
+            return True
+    except:
+        pass
+    region = None
+    return False
 
 
 def find_img(name, conf=0.85):
+    # 优先用 mss+cv2 快速模式
+    if FAST_MODE:
+        pos = fast_find(name, conf)
+        if pos:
+            return pos
+        return None
+    # 兜底用 pyautogui
     if not PYAUTOGUI_AVAILABLE:
         return None
     try:
         return pyautogui.locateOnScreen(
-            resource_path(name), region=region, confidence=conf, grayscale=False
+            resource_path(name), region=region, confidence=conf, grayscale=True
         )
     except:
         return None
@@ -69,34 +162,43 @@ def find_img(name, conf=0.85):
 
 def find_img_multi(names, conf=0.85):
     for name in names:
-        try:
-            pos = pyautogui.locateOnScreen(
-                resource_path(name), region=region, confidence=conf
-            )
-            if pos:
-                return pos
-        except:
-            continue
+        pos = find_img(name, conf)
+        if pos:
+            return pos
     return None
+
+
+def _center_of(pos):
+    """兼容 mss+cv2 的元组 和 pyautogui 的 Box"""
+    if pos is None:
+        return None
+    if isinstance(pos, tuple):
+        x, y, w, h = pos
+        return (x + w // 2, y + h // 2)
+    return pyautogui.center(pos)
 
 
 def click_btn(name):
     pos = find_img(name)
     if pos:
-        x, y = pyautogui.center(pos)
-        pyautogui.click(x + random.randint(-10, 10), y + random.randint(-10, 10))
-        time.sleep(random.uniform(1.5, 2.5))
-        return True
+        center = _center_of(pos)
+        if center:
+            cx, cy = center
+            pyautogui.click(cx + random.randint(-10, 10), cy + random.randint(-10, 10))
+            time.sleep(random.uniform(0.3, 0.5))
+            return True
     return False
 
 
 def click_btn_multi(names):
     pos = find_img_multi(names)
     if pos:
-        x, y = pyautogui.center(pos)
-        pyautogui.click(x + random.randint(-10, 10), y + random.randint(-10, 10))
-        time.sleep(random.uniform(1.5, 2.5))
-        return True
+        center = _center_of(pos)
+        if center:
+            cx, cy = center
+            pyautogui.click(cx + random.randint(-10, 10), cy + random.randint(-10, 10))
+            time.sleep(random.uniform(0.3, 0.5))
+            return True
     return False
 
 
@@ -171,13 +273,14 @@ def bot_loop_shield(app):
         except:
             pass
 
-        time.sleep(0.5)
+        time.sleep(0.1)
         success = False
 
         for popup_img in ["close.png", "close2.png", "cancel.png"]:
             popup = find_img(popup_img)
             if popup:
-                px, py = pyautogui.center(popup)
+                center = _center_of(popup)
+                px, py = center
                 pyautogui.click(px, py)
                 app._log("关闭弹窗")
                 time.sleep(1)
@@ -218,7 +321,7 @@ def bot_loop_shield(app):
             else:
                 fail_count += 1
                 app._log(f"步骤{step} 失败 {fail_count}次")
-                time.sleep(1)
+                time.sleep(0.3)
             if fail_count >= 5:
                 app._log("🔄 卡住，重置")
                 step = 1
@@ -251,13 +354,14 @@ def bot_loop_titan(app):
         except:
             pass
 
-        time.sleep(0.5)
+        time.sleep(0.1)
         success = False
 
         for popup_img in ["close.png", "close2.png", "cancel.png"]:
             popup = find_img(popup_img)
             if popup:
-                px, py = pyautogui.center(popup)
+                center = _center_of(popup)
+                px, py = center
                 pyautogui.click(px, py)
                 app._log("关闭弹窗")
                 time.sleep(1)
@@ -298,7 +402,7 @@ def bot_loop_titan(app):
             else:
                 fail_count += 1
                 app._log(f"步骤{step} 失败 {fail_count}次")
-                time.sleep(1)
+                time.sleep(0.3)
             if fail_count >= 5:
                 app._log("🔄 卡住，重置")
                 step = 1
@@ -314,7 +418,7 @@ class BotApp:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("挂机助手 v2.0")
-        self.root.geometry("440x600")
+        self.root.geometry("600x1400")
         self.root.resizable(False, False)
         self.root.configure(bg="#0f0f1a")
 
