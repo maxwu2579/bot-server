@@ -43,76 +43,6 @@ def get_machine_id():
 
 
 # ============================================================
-#  授权码本地保存（简单加密）
-# ============================================================
-
-
-def _get_config_path():
-    """配置文件放在用户AppData目录，卸载软件不会丢"""
-    appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
-    folder = os.path.join(appdata, "BotHelper")
-    os.makedirs(folder, exist_ok=True)
-    return os.path.join(folder, "config.dat")
-
-
-def _simple_encrypt(text: str) -> str:
-    """用设备码做异或加密，换台电脑就解密不了"""
-    key = get_machine_id()
-    result = []
-    for i, c in enumerate(text):
-        result.append(chr(ord(c) ^ ord(key[i % len(key)])))
-    return "".join(result).encode("utf-8", errors="replace").hex()
-
-
-def _simple_decrypt(hex_str: str) -> str:
-    try:
-        key = get_machine_id()
-        encrypted = bytes.fromhex(hex_str).decode("utf-8", errors="replace")
-        result = []
-        for i, c in enumerate(encrypted):
-            result.append(chr(ord(c) ^ ord(key[i % len(key)])))
-        return "".join(result)
-    except:
-        return ""
-
-
-def save_license(key: str, plan: str):
-    """保存授权码"""
-    try:
-        data = json.dumps({"key": key, "plan": plan})
-        encrypted = _simple_encrypt(data)
-        with open(_get_config_path(), "w") as f:
-            f.write(encrypted)
-    except:
-        pass
-
-
-def load_license():
-    """读取上次保存的授权码，返回 (key, plan) 或 (None, None)"""
-    try:
-        path = _get_config_path()
-        if not os.path.exists(path):
-            return None, None
-        with open(path, "r") as f:
-            encrypted = f.read().strip()
-        decrypted = _simple_decrypt(encrypted)
-        data = json.loads(decrypted)
-        return data.get("key"), data.get("plan")
-    except:
-        return None, None
-
-
-def clear_license():
-    """清除保存的授权码"""
-    try:
-        path = _get_config_path()
-        if os.path.exists(path):
-            os.remove(path)
-    except:
-        pass
-
-
-# ============================================================
 #  图像识别
 # ============================================================
 
@@ -125,8 +55,18 @@ except ImportError:
 
 region = None  # 自动检测游戏窗口后会自动设置
 
-# ⭐ 游戏窗口标题（部分匹配）
-GAME_WINDOW_TITLE = "小游戏"
+# ⭐ 支持的窗口标题列表（按优先级）
+# 会按顺序尝试匹配：原生游戏 → 各种模拟器
+GAME_WINDOW_TITLES = [
+    "小游戏",  # 原生游戏窗口
+    "指尖王国",  # 雷电模拟器
+    "雷电模拟器",
+    "腾讯手游助手",  # MuMu模拟器
+    "MuMu模拟器",
+    "BlueStacks",  # BlueStacks模拟器
+    "NoxPlayer",  # 夜神模拟器
+    "夜神模拟器",
+]
 
 
 # ============================================================
@@ -191,25 +131,28 @@ def fast_find(name, conf=0.85):
 
 
 def auto_detect_region():
-    """自动检测游戏窗口位置"""
+    """自动检测游戏窗口位置（按顺序尝试多个标题）"""
     global region
     try:
         import pygetwindow as gw
 
-        wins = gw.getWindowsWithTitle(GAME_WINDOW_TITLE)
-        if wins:
-            w = wins[0]
-            region = (
-                max(0, w.left + 10),
-                max(0, w.top + 10),
-                w.width - 20,
-                w.height - 20,
-            )
-            return True
+        for title in GAME_WINDOW_TITLES:
+            wins = gw.getWindowsWithTitle(title)
+            # 过滤无效窗口（大小为0的）
+            wins = [w for w in wins if w.width > 100 and w.height > 100]
+            if wins:
+                w = wins[0]
+                region = (
+                    max(0, w.left + 10),
+                    max(0, w.top + 10),
+                    w.width - 20,
+                    w.height - 20,
+                )
+                return title  # 返回找到的标题，方便显示
     except:
         pass
     region = None
-    return False
+    return None
 
 
 def find_img(name, conf=0.85):
@@ -349,6 +292,11 @@ def bot_loop_shield(app):
     step = 1
     fail_count = 0
     app._log("🛡️ 盾牌模式启动，5秒后开始...")
+    found = auto_detect_region()
+    if found:
+        app._log(f"✅ 检测到窗口「{found}」已自动提速")
+    else:
+        app._log("⚠️ 未检测到游戏窗口，使用全屏模式")
     time.sleep(5)
 
     while app.running:
@@ -430,6 +378,11 @@ def bot_loop_titan(app):
     step = 1
     fail_count = 0
     app._log("⚔️ 泰坦模式启动，5秒后开始...")
+    found = auto_detect_region()
+    if found:
+        app._log(f"✅ 检测到窗口「{found}」已自动提速")
+    else:
+        app._log("⚠️ 未检测到游戏窗口，使用全屏模式")
     time.sleep(5)
 
     while app.running:
@@ -523,18 +476,6 @@ class BotApp:
 
         self._build_ui()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
-
-        # 启动时自动加载上次保存的授权码
-        self._auto_load_license()
-
-    def _auto_load_license(self):
-        """自动填入上次的授权码"""
-        saved_key, saved_plan = load_license()
-        if saved_key and saved_plan:
-            self.plan_var.set(saved_plan)
-            self._on_plan_change()  # 启用输入框
-            self.key_entry.delete(0, "end")
-            self.key_entry.insert(0, saved_key)
 
     # ----------------------------------------------------------
     def _build_ui(self):
@@ -632,8 +573,8 @@ class BotApp:
 
         plans = [
             ("🆓  免费试用（1小时）", "trial", GRAY),
-            ("📅  周卡   7", "week", YELLOW),
-            ("👑  月卡   20", "month", GREEN),
+            ("📅  周卡  RM 15", "week", YELLOW),
+            ("👑  月卡  RM 45", "month", GREEN),
         ]
         plan_row = tk.Frame(pc, bg=CARD)
         plan_row.pack(fill="x", padx=15, pady=(0, 4))
@@ -802,11 +743,6 @@ class BotApp:
 
         self._cached_key = key
         self._cached_plan = plan
-
-        # 验证成功后保存授权码（试用不保存）
-        if plan != "trial" and key:
-            save_license(key, plan)
-
         mode_name = "盾牌" if self.mode == "shield" else "泰坦"
         self._log(f"✅ 授权通过 [{plan}] {reason}")
         self._log(f"🚀 启动{mode_name}模式")
