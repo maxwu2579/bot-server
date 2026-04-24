@@ -13,37 +13,84 @@ app = Flask(__name__)
 from supabase import create_client
 
 SUPABASE_URL = "https://hlbxdlnpgjocxwdkpfdh.supabase.co"
-# ⚠️ 换成 Supabase 的 anon key（eyJ 开头那个）
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhsYnhkbG5wZ2pvY3h3ZGtwZmRoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY4NzUxMjMsImV4cCI6MjA5MjQ1MTEyM30.2l2Kj18wdTKxsSLk6im5Q1FxrE3fopzzBPIB41lvmUU"
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-ADMIN_PASSWORD = "13434256266a"  # 建议改得更复杂
-
-# ⚠️ 和 bot_main.py 里的 SIGN_SECRET 保持一致
+ADMIN_PASSWORD = "13434256266a"
 SIGN_SECRET = "2579561724a"
+
+TRIAL_SECONDS = 3600  # 1 小时
 
 
 def check_signature(data: dict) -> bool:
-    """验证客户端签名，防止伪造请求"""
     sig = data.pop("sig", "")
     expected = hmac.new(
         SIGN_SECRET.encode(), json.dumps(data, sort_keys=True).encode(), hashlib.sha256
     ).hexdigest()
-    data["sig"] = sig  # 还原
+    data["sig"] = sig
     return hmac.compare_digest(sig, expected)
 
 
 # ============================================================
-#  验证接口（改为 POST，和客户端一致）
+#  试用接口（新增）
+# ============================================================
+
+
+@app.route("/trial", methods=["POST"])
+def trial():
+    """
+    试用验证：一台设备永久只能试用1次
+    返回剩余秒数，客户端根据这个时间运行
+    """
+    data = request.json or {}
+    if not check_signature(dict(data)):
+        return jsonify({"valid": False, "reason": "签名错误"}), 403
+
+    machine_id = data.get("machine_id", "")
+    if not machine_id:
+        return jsonify({"valid": False, "reason": "缺少设备码"})
+
+    # 查是否已经试用过
+    result = supabase.table("trials").select("*").eq("machine_id", machine_id).execute()
+
+    if result.data:
+        # 已试用过，查剩余时间
+        trial_record = result.data[0]
+        first_used = datetime.fromisoformat(trial_record["first_used"])
+        elapsed = (datetime.utcnow() - first_used).total_seconds()
+        remaining = TRIAL_SECONDS - int(elapsed)
+
+        if remaining <= 0:
+            return jsonify({"valid": False, "reason": "试用已用完，请购买授权码"})
+        return jsonify(
+            {
+                "valid": True,
+                "remaining": remaining,
+                "message": f"试用剩余 {remaining//60} 分钟",
+            }
+        )
+    else:
+        # 第一次试用，记录时间
+        supabase.table("trials").insert(
+            {
+                "machine_id": machine_id,
+                "first_used": datetime.utcnow().isoformat(),
+            }
+        ).execute()
+        return jsonify(
+            {"valid": True, "remaining": TRIAL_SECONDS, "message": "开始试用 1 小时"}
+        )
+
+
+# ============================================================
+#  验证接口
 # ============================================================
 
 
 @app.route("/verify", methods=["POST"])
 def verify():
     data = request.json or {}
-
-    # 签名验证
     if not check_signature(dict(data)):
         return jsonify({"valid": False, "reason": "签名错误"}), 403
 
@@ -60,16 +107,13 @@ def verify():
 
     lic = result.data[0]
 
-    # 过期检查
     expire_at = lic.get("expire_at", "")
     if expire_at and datetime.utcnow().isoformat() > expire_at:
         return jsonify({"valid": False, "reason": "授权码已过期"})
 
-    # 套餐匹配
     if lic.get("plan") != plan:
         return jsonify({"valid": False, "reason": "套餐类型不匹配"})
 
-    # 设备绑定
     saved_mid = lic.get("machine_id")
     if not saved_mid:
         supabase.table("licenses").update({"machine_id": machine_id}).eq(
@@ -82,7 +126,7 @@ def verify():
 
 
 # ============================================================
-#  生成授权码（仅你自己用）
+#  生成授权码
 # ============================================================
 
 
@@ -113,7 +157,7 @@ def gen_key():
 
 
 # ============================================================
-#  撤销授权码（用户退款/违规时使用）
+#  撤销授权码
 # ============================================================
 
 
@@ -127,12 +171,30 @@ def revoke_key():
     if not key:
         return jsonify({"error": "缺少key"}), 400
 
-    # 把过期时间设为过去，立即失效
     supabase.table("licenses").update({"expire_at": "2000-01-01T00:00:00"}).eq(
         "key", key
     ).execute()
 
     return jsonify({"ok": True, "revoked": key})
+
+
+# ============================================================
+#  重置试用（仅管理员用，测试时方便）
+# ============================================================
+
+
+@app.route("/admin/reset_trial", methods=["POST"])
+def reset_trial():
+    data = request.json or {}
+    if data.get("password") != ADMIN_PASSWORD:
+        return jsonify({"error": "无权限"}), 403
+
+    machine_id = data.get("machine_id", "")
+    if not machine_id:
+        return jsonify({"error": "缺少 machine_id"}), 400
+
+    supabase.table("trials").delete().eq("machine_id", machine_id).execute()
+    return jsonify({"ok": True, "reset": machine_id})
 
 
 if __name__ == "__main__":
