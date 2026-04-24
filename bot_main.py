@@ -621,7 +621,7 @@ def bot_loop_shield(app):
 
             elif step == 5:
                 # 出发按钮也限定在下半区找
-                pos = find_text_in_region("出发", y_pct_start=0.6, y_pct_end=1.0)
+                pos = find_text_in_region("出发", y_pct_start=0.5, y_pct_end=1.0)
                 if pos:
                     cx, cy = pos
                     pyautogui.click(
