@@ -43,6 +43,76 @@ def get_machine_id():
 
 
 # ============================================================
+#  授权码本地保存（简单加密）
+# ============================================================
+
+
+def _get_config_path():
+    """配置文件放在用户AppData目录，卸载软件不会丢"""
+    appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
+    folder = os.path.join(appdata, "BotHelper")
+    os.makedirs(folder, exist_ok=True)
+    return os.path.join(folder, "config.dat")
+
+
+def _simple_encrypt(text: str) -> str:
+    """用设备码做异或加密，换台电脑就解密不了"""
+    key = get_machine_id()
+    result = []
+    for i, c in enumerate(text):
+        result.append(chr(ord(c) ^ ord(key[i % len(key)])))
+    return "".join(result).encode("utf-8", errors="replace").hex()
+
+
+def _simple_decrypt(hex_str: str) -> str:
+    try:
+        key = get_machine_id()
+        encrypted = bytes.fromhex(hex_str).decode("utf-8", errors="replace")
+        result = []
+        for i, c in enumerate(encrypted):
+            result.append(chr(ord(c) ^ ord(key[i % len(key)])))
+        return "".join(result)
+    except:
+        return ""
+
+
+def save_license(key: str, plan: str):
+    """保存授权码"""
+    try:
+        data = json.dumps({"key": key, "plan": plan})
+        encrypted = _simple_encrypt(data)
+        with open(_get_config_path(), "w") as f:
+            f.write(encrypted)
+    except:
+        pass
+
+
+def load_license():
+    """读取上次保存的授权码，返回 (key, plan) 或 (None, None)"""
+    try:
+        path = _get_config_path()
+        if not os.path.exists(path):
+            return None, None
+        with open(path, "r") as f:
+            encrypted = f.read().strip()
+        decrypted = _simple_decrypt(encrypted)
+        data = json.loads(decrypted)
+        return data.get("key"), data.get("plan")
+    except:
+        return None, None
+
+
+def clear_license():
+    """清除保存的授权码"""
+    try:
+        path = _get_config_path()
+        if os.path.exists(path):
+            os.remove(path)
+    except:
+        pass
+
+
+# ============================================================
 #  图像识别
 # ============================================================
 
@@ -454,6 +524,18 @@ class BotApp:
         self._build_ui()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
+        # 启动时自动加载上次保存的授权码
+        self._auto_load_license()
+
+    def _auto_load_license(self):
+        """自动填入上次的授权码"""
+        saved_key, saved_plan = load_license()
+        if saved_key and saved_plan:
+            self.plan_var.set(saved_plan)
+            self._on_plan_change()  # 启用输入框
+            self.key_entry.delete(0, "end")
+            self.key_entry.insert(0, saved_key)
+
     # ----------------------------------------------------------
     def _build_ui(self):
         BG = "#0f0f1a"
@@ -720,6 +802,11 @@ class BotApp:
 
         self._cached_key = key
         self._cached_plan = plan
+
+        # 验证成功后保存授权码（试用不保存）
+        if plan != "trial" and key:
+            save_license(key, plan)
+
         mode_name = "盾牌" if self.mode == "shield" else "泰坦"
         self._log(f"✅ 授权通过 [{plan}] {reason}")
         self._log(f"🚀 启动{mode_name}模式")
