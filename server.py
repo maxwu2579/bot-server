@@ -20,7 +20,7 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 ADMIN_PASSWORD = "13434256266a"
 SIGN_SECRET = "2579561724a"
 
-TRIAL_SECONDS = 3600  # 1 小时
+TRIAL_SECONDS = 1800  # 1 小时
 
 
 def check_signature(data: dict) -> bool:
@@ -67,7 +67,7 @@ def trial():
             {
                 "valid": True,
                 "remaining": remaining,
-                "message": f"试用剩余 {remaining//60} 分钟",
+                "message": f"试用剩余 {remaining//30} 分钟",
             }
         )
     else:

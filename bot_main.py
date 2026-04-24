@@ -487,7 +487,7 @@ def wait_for(name, timeout=8):
 VERIFY_URL = "https://bot-server-production-f910.up.railway.app/verify"
 TRIAL_URL = "https://bot-server-production-f910.up.railway.app/trial"
 SIGN_SECRET = "2579561724a"
-TRIAL_SECONDS = 3600
+TRIAL_SECONDS = 1800
 HEARTBEAT_INTERVAL = 1800
 
 
@@ -881,7 +881,7 @@ class BotApp:
         ).pack(anchor="w", padx=15, pady=(10, 4))
 
         plans = [
-            ("🆓  免费试用（1小时）", "trial", GRAY),
+            ("🆓  免费试用（0.5小时）", "trial", GRAY),
             ("📅  周卡   15", "week", YELLOW),
             ("👑  月卡  38", "month", GREEN),
         ]
