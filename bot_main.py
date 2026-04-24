@@ -632,8 +632,8 @@ class BotApp:
 
         plans = [
             ("🆓  免费试用（1小时）", "trial", GRAY),
-            ("📅  周卡  RM 15", "week", YELLOW),
-            ("👑  月卡  RM 45", "month", GREEN),
+            ("📅  周卡   7", "week", YELLOW),
+            ("👑  月卡   20", "month", GREEN),
         ]
         plan_row = tk.Frame(pc, bg=CARD)
         plan_row.pack(fill="x", padx=15, pady=(0, 4))
