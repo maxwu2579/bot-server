@@ -170,7 +170,7 @@ GAME_WINDOW_TITLES = [
     "夜神模拟器",
     "逍遥模拟器",
     "腾讯手游助手",
-    "微信",  # ← 微信放最后（兜底，用户没装游戏专属窗口时才用）
+    # ← 微信放最后（兜底，用户没装游戏专属窗口时才用）
 ]
 
 
@@ -260,9 +260,9 @@ def auto_detect_region():
             _, title, w = all_matches[0]
             region = (
                 max(0, w.left + 10),
-                max(0, w.top + 10),
+                max(0, w.top + 10),  # ← 10 改成 40，跳过标题栏
                 w.width - 20,
-                w.height - 20,
+                w.height - 20,  # ← 20 改成 50，对应减少
             )
             return f"{title} ({w.width}x{w.height})"
     except:
@@ -562,16 +562,24 @@ def verify_license(key, plan):
 
 
 def get_all_texts_in_region(
-    x_pct_start=0.0, x_pct_end=1.0, y_pct_start=0.0, y_pct_end=1.0
+    x_pct_start=0.0,
+    x_pct_end=1.0,
+    y_pct_start=0.0,
+    y_pct_end=1.0,
+    return_box=False,
 ):
-    """获取指定区域内所有 OCR 识别到的文字"""
-    texts = []
+    """
+    获取指定区域内所有 OCR 识别到的文字
+    return_box=False 返回 [text, ...]
+    return_box=True  返回 [(box, text), ...]  box 是相对裁剪区域的坐标
+    """
+    results_out = []
     if not OCR_AVAILABLE or not FAST_MODE:
-        return texts
+        return results_out
     try:
         ocr = _get_ocr()
         if ocr is None:
-            return texts
+            return results_out
         if region:
             mon = {
                 "left": region[0],
@@ -593,40 +601,83 @@ def get_all_texts_in_region(
 
         result, _ = ocr(cropped)
         if not result:
-            return texts
+            return results_out
 
         for item in result:
+            box = item[0]
+            text = None
             for x in item[1:]:
                 if isinstance(x, str):
                     try:
                         float(x)
                         continue
                     except ValueError:
-                        texts.append(x)
+                        text = x
                         break
+            if text is None:
+                continue
+            if return_box:
+                results_out.append((box, text))
+            else:
+                results_out.append(text)
     except Exception as e:
         print(f"OCR 区域识别错误: {e}")
-    return texts
+    return results_out
 
 
 def check_team_status():
-    """检测队伍数（如 1/8），返回 (current, total) 或 None"""
-    texts = get_all_texts_in_region(
-        x_pct_start=0.05,
-        x_pct_end=0.2,
-        y_pct_start=0.27,
-        y_pct_end=0.33,
+    raw = get_all_texts_in_region(
+        x_pct_start=0.0,
+        x_pct_end=0.30,
+        y_pct_start=0.10,
+        y_pct_end=0.45,  # ← 从 0.18-0.40 改成 0.10-0.45
+        return_box=True,
     )
-    for text in texts:
+
+    team_candidates = []  # [(current, total, box), ...]
+    edit_boxes = []  # [box, ...]
+
+    for box, text in raw:
         clean = text.replace(" ", "")
-        match = re.search(r"(\d+)\s*/\s*(\d+)", clean)
-        if match:
-            current = int(match.group(1))
-            total = int(match.group(2))
-            if total > 10:
-                continue
-            return (current, total)
+        # 找 X/Y 数字
+        m = re.search(r"(\d+)\s*/\s*(\d+)", clean)
+        if m:
+            current = int(m.group(1))
+            total = int(m.group(2))
+            if total <= 10:
+                # 修正 OCR 错误：current 不可能比 total 大（如 10/3 实际是 0/3）
+                if current > total:
+                    current_str = str(current)
+                    if len(current_str) > 1:
+                        current = int(current_str[1:])  # 去掉首位字符
+                    else:
+                        continue
+                team_candidates.append((current, total, box))
+        # 找"编辑"（模糊：含"编"或"辑"）
+        if "编" in text or "辑" in text:
+            edit_boxes.append(box)
+
+    # 没找到"编辑" → 直接返回 None
+    if not edit_boxes:
+        return None
+
+    # 配对：X/Y 必须和"编辑"同一行
+    for current, total, num_box in team_candidates:
+        for edit_box in edit_boxes:
+            if _is_same_row(num_box, edit_box):
+                return (current, total)
+
     return None
+
+
+def _is_same_row(box1, box2):
+    """判断两个文字框是否在同一行（Y 中心距离 < 文字高度的 1.5 倍）"""
+    cy1 = sum(p[1] for p in box1) / 4
+    cy2 = sum(p[1] for p in box2) / 4
+    h1 = max(p[1] for p in box1) - min(p[1] for p in box1)
+    h2 = max(p[1] for p in box2) - min(p[1] for p in box2)
+    avg_h = (h1 + h2) / 2
+    return abs(cy1 - cy2) < avg_h * 1.5
 
 
 def parse_time_to_seconds(time_str):
@@ -664,18 +715,32 @@ def get_shortest_collect_time():
 
 
 def click_window_center():
-    """点击游戏窗口的正中心"""
+    """点击游戏窗口的正中心（如果没点到，再往下点几次）"""
     if region:
         cx = region[0] + region[2] // 2
-        cy = region[1] + region[3] // 2
+        cy_center = region[1] + region[3] // 2
+        win_h = region[3]
     else:
         screen_w, screen_h = pyautogui.size()
         cx = screen_w // 2
-        cy = screen_h // 2
-    pyautogui.click(
-        cx + random.randint(-8, 8),
-        cy + random.randint(-5, 5),
-    )
+        cy_center = screen_h // 2
+        win_h = screen_h
+
+    # 点 3 个位置：正中心、稍下、再下
+    # 偏移用窗口高度的百分比，适配不同尺寸
+    offsets = [0, int(win_h * 0.04), int(win_h * 0.08)]
+    for offset in offsets:
+        pyautogui.click(
+            cx + random.randint(-8, 8),
+            cy_center + offset + random.randint(-5, 5),
+        )
+        time.sleep(0.8)
+
+        # 每点一次后检测有没有"采集"弹窗
+        if find_text(
+            "采集", x_pct_start=0.3, x_pct_end=0.8, y_pct_start=0.6, y_pct_end=0.9
+        ):
+            return  # 已经点到了，不用再点了
     time.sleep(random.uniform(0.5, 0.8))
 
 
@@ -760,13 +825,13 @@ def bot_loop_shield(app):
 
             elif step == 5:
                 # 出发按钮也限定在下半区找
-                pos = find_text_in_region("出发", y_pct_start=0.5, y_pct_end=1.0)
+                pos = find_text_in_region("出发", y_pct_start=0.4, y_pct_end=0.9)
                 if pos:
                     cx, cy = pos
                     pyautogui.click(
                         cx + random.randint(-8, 8), cy + random.randint(-5, 5)
                     )
-                    time.sleep(random.uniform(0.2, 0.3))
+                    time.sleep(random.uniform(0.5, 0.7))
                     app._log("✅ 步骤5：出发！重新开始")
                     step = 1
                     success = True
@@ -819,7 +884,7 @@ def bot_loop_titan(app):
         time.sleep(0.1)
         success = False
 
-        for popup_img in ["close.png", "close2.png", "cancel.png"]:
+        for popup_img in ["close.png"]:
             popup = find_img(popup_img)
             if popup:
                 center = _center_of(popup)
@@ -862,19 +927,19 @@ def bot_loop_titan(app):
                     pyautogui.click(
                         cx + random.randint(-8, 8), cy + random.randint(-5, 5)
                     )
-                    time.sleep(random.uniform(0.4, 0.6))  # 等弹窗出现
+                    time.sleep(random.uniform(0.3, 0.4))  # 等弹窗出现
                     app._log("✅ 步骤4：点击集结")
 
                     # 检测有没有"确认"弹窗（如果有就处理，没有就直接进 step5）
                     confirm_pos = find_text_in_region(
-                        "确认", y_pct_start=0.5, y_pct_end=1.0
+                        "确认", y_pct_start=0.4, y_pct_end=0.7
                     )
                     if confirm_pos:
                         fx, fy = confirm_pos
                         pyautogui.click(
                             fx + random.randint(-8, 8), fy + random.randint(-5, 5)
                         )
-                        time.sleep(random.uniform(0.4, 0.6))
+                        time.sleep(random.uniform(0.3, 0.4))
                         app._log("   → 检测到确认弹窗，已点击确认")
 
                     # 不管有没有弹窗，进入 step5 让它去点出发
@@ -993,6 +1058,7 @@ def bot_loop_collect(app):
         success = False
 
         if step == 1:
+            auto_detect_region()
             # 检测队伍状态
             app._log("🔍 检测队伍状态...")
             status = check_team_status()
@@ -1091,7 +1157,7 @@ def bot_loop_collect(app):
             # 调试：打印整个屏幕识别到的文字
 
             if click_text(
-                "出发", x_pct_start=0.4, x_pct_end=1.0, y_pct_start=0.5, y_pct_end=1.0
+                "出发", x_pct_start=0.4, x_pct_end=1.0, y_pct_start=0.4, y_pct_end=0.9
             ):
                 app._log("✅ 步骤6：出发！一轮完成")
                 time.sleep(random.uniform(0.8, 1.2))
