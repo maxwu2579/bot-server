@@ -612,9 +612,9 @@ def get_all_texts_in_region(
 def check_team_status():
     """检测队伍数（如 1/8），返回 (current, total) 或 None"""
     texts = get_all_texts_in_region(
-        x_pct_start=0.0,
-        x_pct_end=0.3,
-        y_pct_start=0.22,
+        x_pct_start=0.05,
+        x_pct_end=0.2,
+        y_pct_start=0.27,
         y_pct_end=0.33,
     )
     for text in texts:
@@ -992,22 +992,6 @@ def bot_loop_collect(app):
         time.sleep(0.1)
         success = False
 
-        # 弹窗处理
-        popup_handled = False
-        for popup_img in ["close.png", "close2.png", "cancel.png"]:
-            popup = find_img(popup_img)
-            if popup:
-                center = _center_of(popup)
-                px, py = center
-                pyautogui.click(px, py)
-                app._log("关闭弹窗")
-                time.sleep(1)
-                popup_handled = True
-                break
-
-        if popup_handled:
-            continue
-
         if step == 1:
             # 检测队伍状态
             app._log("🔍 检测队伍状态...")
@@ -1099,12 +1083,18 @@ def bot_loop_collect(app):
                 "采集", x_pct_start=0.4, x_pct_end=0.7, y_pct_start=0.6, y_pct_end=1.0
             ):
                 app._log("✅ 步骤5：点击采集（弹窗）")
+                time.sleep(random.uniform(1.5, 2.0))
                 step = 6
                 success = True
 
         elif step == 6:
-            if click_text("出发"):
+            # 调试：打印整个屏幕识别到的文字
+
+            if click_text(
+                "出发", x_pct_start=0.4, x_pct_end=1.0, y_pct_start=0.5, y_pct_end=1.0
+            ):
                 app._log("✅ 步骤6：出发！一轮完成")
+                time.sleep(random.uniform(0.8, 1.2))
                 step = 1
                 success = True
 
