@@ -3,6 +3,7 @@ from tkinter import messagebox
 import threading
 import time
 import random
+import re
 import hashlib
 import uuid
 import sys
@@ -291,11 +292,17 @@ def _get_ocr():
     return _ocr_engine
 
 
-def find_text(target_text: str, conf=0.5):
+def find_text(
+    target_text: str,
+    y_pct_start=0.0,
+    y_pct_end=1.0,
+    x_pct_start=0.0,
+    x_pct_end=1.0,
+    conf=0.5,
+):
     """
     在屏幕上找文字，返回按钮中心坐标 (x, y) 或 None
-    target_text: 要找的文字，支持多个（用 | 分隔）
-                 例如: "搜索"  或  "特殊|特殊模式"
+    支持指定 X/Y 区域百分比
     """
     if not OCR_AVAILABLE or not FAST_MODE:
         return None
@@ -316,26 +323,34 @@ def find_text(target_text: str, conf=0.5):
             mon = _sct.monitors[1]
         screenshot = np.array(_sct.grab(mon))
         img = cv2.cvtColor(screenshot, cv2.COLOR_BGRA2BGR)
+        h, w = img.shape[:2]
+
+        # 裁剪指定区域
+        y_start = int(h * y_pct_start)
+        y_end = int(h * y_pct_end)
+        x_start = int(w * x_pct_start)
+        x_end = int(w * x_pct_end)
+        cropped = img[y_start:y_end, x_start:x_end]
 
         # OCR 识别
-        result, _ = ocr(img)
+        result, _ = ocr(cropped)
         if not result:
             return None
 
         # 查找匹配的文字
         targets = [t.strip() for t in target_text.split("|")]
         for box, text, score in result:
-            if float(score) < conf:
-                continue
+            try:
+                if float(score) < conf:
+                    continue
+            except (ValueError, TypeError):
+                pass
             for t in targets:
                 if t in text:
-                    # box 是4个点 [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]
-                    # 计算中心
                     xs = [p[0] for p in box]
                     ys = [p[1] for p in box]
-                    cx = int(sum(xs) / 4)
-                    cy = int(sum(ys) / 4)
-                    # 加上 region 偏移
+                    cx = int(sum(xs) / 4) + x_start
+                    cy = int(sum(ys) / 4) + y_start
                     if region:
                         cx += region[0]
                         cy += region[1]
@@ -345,7 +360,7 @@ def find_text(target_text: str, conf=0.5):
     return None
 
 
-def find_text_in_region(target_text: str, y_pct_start=0.0, y_pct_end=1.0, conf=0.5):
+def find_text_in_region(target_text: str, y_pct_start=0.0, y_pct_end=1.0, conf=0.4):
     """
     在窗口的指定纵向百分比区域内找文字（不依赖分辨率）
     y_pct_start=0.6 表示从窗口60%高度开始找
@@ -392,9 +407,11 @@ def find_text_in_region(target_text: str, y_pct_start=0.0, y_pct_end=1.0, conf=0
     return None
 
 
-def click_text(target_text: str):
-    """用 OCR 找文字并点击"""
-    pos = find_text(target_text)
+def click_text(
+    target_text: str, y_pct_start=0.0, y_pct_end=1.0, x_pct_start=0.0, x_pct_end=1.0
+):
+    """用 OCR 找文字并点击（支持区域）"""
+    pos = find_text(target_text, y_pct_start, y_pct_end, x_pct_start, x_pct_end)
     if pos:
         cx, cy = pos
         pyautogui.click(cx + random.randint(-8, 8), cy + random.randint(-5, 5))
@@ -455,7 +472,7 @@ def click_btn(name):
         if center:
             cx, cy = center
             pyautogui.click(cx + random.randint(-10, 10), cy + random.randint(-10, 10))
-            time.sleep(random.uniform(0.3, 0.5))
+            time.sleep(random.uniform(0.2, 0.3))
             return True
     return False
 
@@ -467,7 +484,7 @@ def click_btn_multi(names):
         if center:
             cx, cy = center
             pyautogui.click(cx + random.randint(-10, 10), cy + random.randint(-10, 10))
-            time.sleep(random.uniform(0.3, 0.5))
+            time.sleep(random.uniform(0.2, 0.3))
             return True
     return False
 
@@ -540,6 +557,129 @@ def verify_license(key, plan):
 
 
 # ============================================================
+#  采集模式辅助函数
+# ============================================================
+
+
+def get_all_texts_in_region(
+    x_pct_start=0.0, x_pct_end=1.0, y_pct_start=0.0, y_pct_end=1.0
+):
+    """获取指定区域内所有 OCR 识别到的文字"""
+    texts = []
+    if not OCR_AVAILABLE or not FAST_MODE:
+        return texts
+    try:
+        ocr = _get_ocr()
+        if ocr is None:
+            return texts
+        if region:
+            mon = {
+                "left": region[0],
+                "top": region[1],
+                "width": region[2],
+                "height": region[3],
+            }
+        else:
+            mon = _sct.monitors[1]
+        screenshot_img = np.array(_sct.grab(mon))
+        img = cv2.cvtColor(screenshot_img, cv2.COLOR_BGRA2BGR)
+        h, w = img.shape[:2]
+
+        y_start = int(h * y_pct_start)
+        y_end = int(h * y_pct_end)
+        x_start = int(w * x_pct_start)
+        x_end = int(w * x_pct_end)
+        cropped = img[y_start:y_end, x_start:x_end]
+
+        result, _ = ocr(cropped)
+        if not result:
+            return texts
+
+        for item in result:
+            for x in item[1:]:
+                if isinstance(x, str):
+                    try:
+                        float(x)
+                        continue
+                    except ValueError:
+                        texts.append(x)
+                        break
+    except Exception as e:
+        print(f"OCR 区域识别错误: {e}")
+    return texts
+
+
+def check_team_status():
+    """检测队伍数（如 1/8），返回 (current, total) 或 None"""
+    texts = get_all_texts_in_region(
+        x_pct_start=0.0,
+        x_pct_end=0.3,
+        y_pct_start=0.22,
+        y_pct_end=0.33,
+    )
+    for text in texts:
+        clean = text.replace(" ", "")
+        match = re.search(r"(\d+)\s*/\s*(\d+)", clean)
+        if match:
+            current = int(match.group(1))
+            total = int(match.group(2))
+            if total > 10:
+                continue
+            return (current, total)
+    return None
+
+
+def parse_time_to_seconds(time_str):
+    """把 'HH:MM:SS' 或 'MM:SS' 转秒数"""
+    parts = time_str.split(":")
+    try:
+        if len(parts) == 3:
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+        elif len(parts) == 2:
+            return int(parts[0]) * 60 + int(parts[1])
+    except ValueError:
+        pass
+    return None
+
+
+def get_shortest_collect_time():
+    """获取最短的采集剩余时间（秒）"""
+    texts = get_all_texts_in_region(
+        x_pct_start=0.0,
+        x_pct_end=0.4,
+        y_pct_start=0.2,
+        y_pct_end=0.8,
+    )
+    all_seconds = []
+    pattern = re.compile(r"(\d{1,2}:\d{2}(?::\d{2})?)")
+    for text in texts:
+        for match in pattern.findall(text):
+            sec = parse_time_to_seconds(match)
+            if sec is not None and sec > 0:
+                all_seconds.append((match, sec))
+    if not all_seconds:
+        return None
+    all_seconds.sort(key=lambda x: x[1])
+    return all_seconds[0][1]
+
+
+def click_window_center():
+    """点击游戏窗口的正中心"""
+    if region:
+        cx = region[0] + region[2] // 2
+        cy = region[1] + region[3] // 2
+    else:
+        screen_w, screen_h = pyautogui.size()
+        cx = screen_w // 2
+        cy = screen_h // 2
+    pyautogui.click(
+        cx + random.randint(-8, 8),
+        cy + random.randint(-5, 5),
+    )
+    time.sleep(random.uniform(0.5, 0.8))
+
+
+# ============================================================
 #  挂机逻辑 - 盾牌模式（原 bot_main）
 # ============================================================
 
@@ -548,7 +688,7 @@ def bot_loop_shield(app):
     pyautogui.FAILSAFE = True
     step = 1
     fail_count = 0
-    app._log("🛡️ 盾牌模式启动，5秒后开始...")
+    app._log("🛡️ 盾牌模式启动，2秒后开始...")
     found = auto_detect_region()
     if found:
         app._log(f"✅ 检测到窗口「{found}」")
@@ -558,7 +698,7 @@ def bot_loop_shield(app):
         app._log("🔤 OCR文字识别已就绪（首次识别需1-2秒加载）")
     else:
         app._log("⚠️ OCR 未安装，请 pip install rapidocr_onnxruntime")
-    time.sleep(5)
+    time.sleep(2)
 
     while app.running:
         if time.time() - app.start_time > app.trial_limit:
@@ -601,11 +741,10 @@ def bot_loop_shield(app):
                 if click_text("召唤"):
                     app._log("✅ 步骤3：召唤，等待集结...")
                     success = True
-                    if wait_for_text("集结", timeout=8):
+                    if wait_for_text("集结", timeout=2):
                         step = 4
-                    else:
-                        app._log("⚠️ 超时，重置")
-                        step = 1
+                    app._log("⏳ 还在等集结...")
+
             elif step == 4:
                 # 弹窗里的集结按钮，限定在窗口下60%找，避免被上方文字干扰
                 pos = find_text_in_region("集结", y_pct_start=0.7, y_pct_end=1.0)
@@ -614,7 +753,7 @@ def bot_loop_shield(app):
                     pyautogui.click(
                         cx + random.randint(-8, 8), cy + random.randint(-5, 5)
                     )
-                    time.sleep(random.uniform(0.3, 0.5))
+                    time.sleep(random.uniform(0.2, 0.3))
                     app._log("✅ 步骤4：集结")
                     step = 5
                     success = True
@@ -627,7 +766,7 @@ def bot_loop_shield(app):
                     pyautogui.click(
                         cx + random.randint(-8, 8), cy + random.randint(-5, 5)
                     )
-                    time.sleep(random.uniform(0.3, 0.5))
+                    time.sleep(random.uniform(0.2, 0.3))
                     app._log("✅ 步骤5：出发！重新开始")
                     step = 1
                     success = True
@@ -653,7 +792,7 @@ def bot_loop_titan(app):
     pyautogui.FAILSAFE = True
     step = 1
     fail_count = 0
-    app._log("⚔️ 泰坦模式启动，5秒后开始...")
+    app._log("⚔️ 泰坦模式启动，2秒后开始...")
     found = auto_detect_region()
     if found:
         app._log(f"✅ 检测到窗口「{found}」")
@@ -661,7 +800,7 @@ def bot_loop_titan(app):
         app._log("⚠️ 未检测到游戏窗口，使用全屏模式")
     if OCR_AVAILABLE:
         app._log("🔤 OCR文字识别已就绪（首次识别需1-2秒加载）")
-    time.sleep(5)
+    time.sleep(2)
 
     while app.running:
         if time.time() - app.start_time > app.trial_limit:
@@ -703,7 +842,7 @@ def bot_loop_titan(app):
                     pyautogui.click(
                         cx + random.randint(-8, 8), cy + random.randint(-5, 5)
                     )
-                    time.sleep(random.uniform(0.3, 0.5))
+                    time.sleep(random.uniform(0.2, 0.3))
                     app._log("✅ 步骤2：集结按钮")
                     step = 3
                     success = True
@@ -711,7 +850,7 @@ def bot_loop_titan(app):
                 if click_text("搜索"):
                     app._log("✅ 步骤3：搜索2，等待出发...")
                     success = True
-                    if wait_for_text("集结", timeout=4):
+                    if wait_for_text("集结", timeout=2):
                         step = 4
                     else:
                         app._log("⚠️ 超时，重置")
@@ -723,8 +862,22 @@ def bot_loop_titan(app):
                     pyautogui.click(
                         cx + random.randint(-8, 8), cy + random.randint(-5, 5)
                     )
-                    time.sleep(random.uniform(0.3, 0.5))
-                    app._log("✅ 步骤4：出发2")
+                    time.sleep(random.uniform(0.4, 0.6))  # 等弹窗出现
+                    app._log("✅ 步骤4：点击集结")
+
+                    # 检测有没有"确认"弹窗（如果有就处理，没有就直接进 step5）
+                    confirm_pos = find_text_in_region(
+                        "确认", y_pct_start=0.5, y_pct_end=1.0
+                    )
+                    if confirm_pos:
+                        fx, fy = confirm_pos
+                        pyautogui.click(
+                            fx + random.randint(-8, 8), fy + random.randint(-5, 5)
+                        )
+                        time.sleep(random.uniform(0.4, 0.6))
+                        app._log("   → 检测到确认弹窗，已点击确认")
+
+                    # 不管有没有弹窗，进入 step5 让它去点出发
                     step = 5
                     success = True
             elif step == 5:
@@ -734,8 +887,60 @@ def bot_loop_titan(app):
                     pyautogui.click(
                         cx + random.randint(-8, 8), cy + random.randint(-5, 5)
                     )
-                    time.sleep(random.uniform(0.3, 0.5))
-                    app._log("✅ 步骤5：出发！重新开始")
+                    time.sleep(random.uniform(0.4, 0.6))  # 等弹窗出现
+                    app._log("✅ 步骤5：点击出发")
+
+                    # 🔍 检测是否有"使用"弹窗（体力不足提示等）
+                    use_pos = find_text("使用")
+                    if use_pos:
+                        app._log("⚠️ 检测到'使用'弹窗")
+                        # 1. 点击"使用"
+                        ux, uy = use_pos
+                        pyautogui.click(
+                            ux + random.randint(-8, 8), uy + random.randint(-5, 5)
+                        )
+                        app._log("   → 点击使用")
+                        time.sleep(random.uniform(0.4, 0.6))
+
+                        # 2. 点击 X 关闭弹窗
+                        closed = False
+                        for close_img in [
+                            "close.png",
+                            "close2.png",
+                            "close3.png",
+                            "cancel.png",
+                            "close4.png",
+                        ]:
+                            close_pos = find_img(close_img)
+                            if close_pos:
+                                ccx, ccy = _center_of(close_pos)
+                                pyautogui.click(ccx, ccy)
+                                app._log("   → 关闭弹窗 X")
+                                time.sleep(random.uniform(0.5, 0.8))
+                                closed = True
+                                break
+                        if not closed:
+                            app._log("   ⚠️ 未找到关闭按钮")
+
+                        # 3. 重新点击"出发"
+                        pos2 = find_text_in_region(
+                            "出发", y_pct_start=0.5, y_pct_end=1.0
+                        )
+                        if pos2:
+                            cx2, cy2 = pos2
+                            pyautogui.click(
+                                cx2 + random.randint(-8, 8),
+                                cy2 + random.randint(-5, 5),
+                            )
+                            app._log("   → 重新点击出发")
+                            time.sleep(random.uniform(0.5, 0.8))
+                            app._log("✅ 步骤5完成（处理了使用弹窗）！重新开始")
+                        else:
+                            app._log("   ⚠️ 重新点击出发失败")
+                    else:
+                        # 没有弹窗，直接完成
+                        app._log("✅ 步骤5完成！重新开始")
+
                     step = 1
                     success = True
 
@@ -744,11 +949,175 @@ def bot_loop_titan(app):
             else:
                 fail_count += 1
                 app._log(f"步骤{step} 失败 {fail_count}次")
-                time.sleep(0.3)
+                time.sleep(0.2)
             if fail_count >= 5:
                 app._log("🔄 卡住，重置")
                 step = 1
                 fail_count = 0
+
+
+# ============================================================
+#  挂机逻辑 - 采集模式
+# ============================================================
+
+
+def bot_loop_collect(app):
+    pyautogui.FAILSAFE = True
+    step = 1
+    fail_count = 0
+    app._log("⛏️ 采集模式启动，2秒后开始...")
+    found = auto_detect_region()
+    if found:
+        app._log(f"✅ 检测到窗口「{found}」")
+    else:
+        app._log("⚠️ 未检测到游戏窗口，使用全屏模式")
+    if OCR_AVAILABLE:
+        app._log("🔤 OCR文字识别已就绪")
+    time.sleep(2)
+
+    while app.running:
+        if time.time() - app.start_time > app.trial_limit:
+            app._log("⏰ 试用时间已到")
+            app.root.after(0, app._stop)
+            break
+        try:
+            x, y = pyautogui.position()
+            if x <= 5 and y <= 5:
+                app._log("🛑 紧急停止")
+                app.root.after(0, app._stop)
+                break
+        except:
+            pass
+
+        time.sleep(0.1)
+        success = False
+
+        # 弹窗处理
+        popup_handled = False
+        for popup_img in ["close.png", "close2.png", "cancel.png"]:
+            popup = find_img(popup_img)
+            if popup:
+                center = _center_of(popup)
+                px, py = center
+                pyautogui.click(px, py)
+                app._log("关闭弹窗")
+                time.sleep(1)
+                popup_handled = True
+                break
+
+        if popup_handled:
+            continue
+
+        if step == 1:
+            # 检测队伍状态
+            app._log("🔍 检测队伍状态...")
+            status = check_team_status()
+            if status is None:
+                app._log("⚠️ 未识别到队伍数，默认放行")
+            else:
+                current, total = status
+                app._log(f"🔍 队伍：{current}/{total}")
+                if current >= total:
+                    # 队伍满了
+                    shortest = get_shortest_collect_time()
+                    if shortest is None:
+                        wait_seconds = 30
+                        app._log("⚠️ 未找到采集时间，等30秒")
+                    else:
+                        wait_seconds = shortest + 30
+                        mins = wait_seconds // 30
+                        secs = wait_seconds % 30
+                        app._log(f"💤 队伍已满，等待 {mins}分{secs}秒...")
+
+                    # 可中断睡眠
+                    slept = 0
+                    interrupted = False
+                    while slept < wait_seconds and app.running:
+                        try:
+                            mx, my = pyautogui.position()
+                            if mx <= 5 and my <= 5:
+                                app._log("🛑 紧急停止")
+                                app.root.after(0, app._stop)
+                                interrupted = True
+                                break
+                        except:
+                            pass
+                        time.sleep(1)
+                        slept += 1
+                    if interrupted or not app.running:
+                        break
+                    app._log("⏰ 等待结束，重新检测")
+                    continue  # 跳回循环顶部重新检测
+
+            # 队伍有空闲，点搜索
+            if click_text("搜索"):
+                app._log("✅ 步骤1：点击搜索")
+                step = 2
+                success = True
+
+        elif step == 2:
+            if click_text("采集"):
+                app._log("✅ 步骤2：点击采集")
+                step = 3
+                success = True
+
+        elif step == 3:
+            if click_text("搜索", y_pct_start=0.5, y_pct_end=0.8):
+                app._log("✅ 步骤3：点击搜索（中下部）")
+                time.sleep(random.uniform(1.0, 1.5))
+                step = 4
+                success = True
+
+        elif step == 4:
+            click_window_center()
+            app._log("✅ 步骤4：点击窗口中心（采集点）")
+            time.sleep(random.uniform(0.8, 1.2))
+
+            # 等弹窗里的"采集"
+            found_popup = False
+            for _ in range(3):
+                if find_text(
+                    "采集",
+                    x_pct_start=0.4,
+                    x_pct_end=0.7,
+                    y_pct_start=0.6,
+                    y_pct_end=1.0,
+                ):
+                    found_popup = True
+                    break
+                time.sleep(1)
+
+            if found_popup:
+                step = 5
+                success = True
+            else:
+                app._log("⚠️ 没等到采集弹窗，重置")
+                step = 1
+
+        elif step == 5:
+            if click_text(
+                "采集", x_pct_start=0.4, x_pct_end=0.7, y_pct_start=0.6, y_pct_end=1.0
+            ):
+                app._log("✅ 步骤5：点击采集（弹窗）")
+                step = 6
+                success = True
+
+        elif step == 6:
+            if click_text("出发"):
+                app._log("✅ 步骤6：出发！一轮完成")
+                step = 1
+                success = True
+
+        if success:
+            fail_count = 0
+        else:
+            fail_count += 1
+            app._log(f"步骤{step} 失败 {fail_count}次")
+            time.sleep(0.3)
+        if fail_count >= 5:
+            app._log("🔄 卡住，重置")
+            step = 1
+            fail_count = 0
 
 
 # ============================================================
@@ -829,10 +1198,10 @@ class BotApp:
         self.shield_btn = tk.Button(
             mode_frame,
             text="🛡️\n盾牌模式",
-            font=("Microsoft YaHei", 11, "bold"),
+            font=("Microsoft YaHei", 10, "bold"),
             bg=CARD,
             fg=BLUE,
-            width=12,
+            width=8,
             height=3,
             relief="flat",
             cursor="hand2",
@@ -840,16 +1209,16 @@ class BotApp:
             activeforeground=BLUE,
             command=lambda: self._select_mode("shield"),
         )
-        self.shield_btn.pack(side="left", padx=(0, 8), expand=True, fill="x")
+        self.shield_btn.pack(side="left", padx=(0, 6), expand=True, fill="x")
 
         # 泰坦按钮
         self.titan_btn = tk.Button(
             mode_frame,
             text="⚔️\n泰坦模式",
-            font=("Microsoft YaHei", 11, "bold"),
+            font=("Microsoft YaHei", 10, "bold"),
             bg=CARD,
             fg=ORANGE,
-            width=12,
+            width=8,
             height=3,
             relief="flat",
             cursor="hand2",
@@ -857,7 +1226,24 @@ class BotApp:
             activeforeground=ORANGE,
             command=lambda: self._select_mode("titan"),
         )
-        self.titan_btn.pack(side="left", expand=True, fill="x")
+        self.titan_btn.pack(side="left", padx=(0, 6), expand=True, fill="x")
+
+        # 采集按钮
+        self.collect_btn = tk.Button(
+            mode_frame,
+            text="⛏️\n采集模式",
+            font=("Microsoft YaHei", 10, "bold"),
+            bg=CARD,
+            fg="#22c55e",  # 绿色
+            width=8,
+            height=3,
+            relief="flat",
+            cursor="hand2",
+            activebackground=ACCENT,
+            activeforeground="#22c55e",
+            command=lambda: self._select_mode("collect"),
+        )
+        self.collect_btn.pack(side="left", expand=True, fill="x")
 
         # 模式描述
         self.mode_desc = tk.Label(
@@ -882,8 +1268,8 @@ class BotApp:
 
         plans = [
             ("🆓  免费试用（0.5小时）", "trial", GRAY),
-            ("📅  周卡   15", "week", YELLOW),
-            ("👑  月卡  38", "month", GREEN),
+            ("📅  周卡   12", "week", YELLOW),
+            ("👑  月卡  30", "month", GREEN),
         ]
         plan_row = tk.Frame(pc, bg=CARD)
         plan_row.pack(fill="x", padx=15, pady=(0, 4))
@@ -996,19 +1382,30 @@ class BotApp:
         GREEN = "#4ade80"
 
         self.mode = mode
+        COLLECT_GREEN = "#22c55e"
         if mode == "shield":
             self.shield_btn.config(bg=ACCENT, relief="sunken")
             self.titan_btn.config(bg=CARD, relief="flat")
+            self.collect_btn.config(bg=CARD, relief="flat")
             self.mode_desc.config(text="🛡️ 盾牌模式：副本挂机", fg=BLUE)
             self.start_btn.config(
                 text="▶  启动盾牌模式", bg=BLUE, fg="#0f172a", state="normal"
             )
-        else:
+        elif mode == "titan":
             self.titan_btn.config(bg=ACCENT, relief="sunken")
             self.shield_btn.config(bg=CARD, relief="flat")
+            self.collect_btn.config(bg=CARD, relief="flat")
             self.mode_desc.config(text="⚔️ 泰坦模式：泰坦挂机", fg=ORANGE)
             self.start_btn.config(
                 text="▶  启动泰坦模式", bg=ORANGE, fg="#0f172a", state="normal"
+            )
+        else:  # collect
+            self.collect_btn.config(bg=ACCENT, relief="sunken")
+            self.shield_btn.config(bg=CARD, relief="flat")
+            self.titan_btn.config(bg=CARD, relief="flat")
+            self.mode_desc.config(text="⛏️ 采集模式：自动采集", fg=COLLECT_GREEN)
+            self.start_btn.config(
+                text="▶  启动采集模式", bg=COLLECT_GREEN, fg="#0f172a", state="normal"
             )
 
     def _on_plan_change(self):
@@ -1057,7 +1454,8 @@ class BotApp:
         if plan != "trial" and key:
             save_license(key, plan)
 
-        mode_name = "盾牌" if self.mode == "shield" else "泰坦"
+        mode_names = {"shield": "盾牌", "titan": "泰坦", "collect": "采集"}
+        mode_name = mode_names.get(self.mode, "盾牌")
         self._log(f"✅ 授权通过 [{plan}] {reason}")
         self._log(f"🚀 启动{mode_name}模式")
 
@@ -1078,22 +1476,35 @@ class BotApp:
         self.start_btn.config(text="⏹  停 止", bg="#f87171", fg="white")
         self.shield_btn.config(state="disabled")
         self.titan_btn.config(state="disabled")
+        self.collect_btn.config(state="disabled")
         self._set_status(f"{mode_name}模式运行中", "#4ade80")
 
-        target = bot_loop_shield if self.mode == "shield" else bot_loop_titan
+        targets = {
+            "shield": bot_loop_shield,
+            "titan": bot_loop_titan,
+            "collect": bot_loop_collect,
+        }
+        target = targets.get(self.mode, bot_loop_shield)
         self.thread = threading.Thread(target=target, args=(self,), daemon=True)
         self.thread.start()
         self._tick()
 
     def _stop(self):
         self.running = False
+        mode_colors = {
+            "shield": ("盾牌", "#60a5fa"),
+            "titan": ("泰坦", "#fb923c"),
+            "collect": ("采集", "#22c55e"),
+        }
+        name, color = mode_colors.get(self.mode, ("盾牌", "#60a5fa"))
         self.start_btn.config(
-            text="▶  启动" + ("盾牌" if self.mode == "shield" else "泰坦") + "模式",
-            bg="#60a5fa" if self.mode == "shield" else "#fb923c",
+            text="▶  启动" + name + "模式",
+            bg=color,
             fg="#0f172a",
         )
         self.shield_btn.config(state="normal")
         self.titan_btn.config(state="normal")
+        self.collect_btn.config(state="normal")
         self._set_status("已停止", "#64748b")
         self.timer_label.config(text="")
         self._log("⏹ 已停止")
